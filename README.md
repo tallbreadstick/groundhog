@@ -1,7 +1,12 @@
-groundhog
-=========
-
-Manage point-in-time snapshots of directories and databases for rapid rollback. Groundhog is not a version control system; snapshots are immutable and rollbacks restore the system to a previous stable state without tracking intermediate changes.
+<p align="center">
+  <img src="Groundhog.png" alt="Groundhog logo" width="160" />
+  <br/>
+  <h1 align="center" style="margin: 0; padding: 0; font-size: 2.4rem;">Groundhog</h1>
+  <p align="center" style="margin-top: 0.25rem; font-size: 1.05rem;">
+    Manage point-in-time snapshots of directories and databases for rapid rollback.
+    Snapshots are immutable; rollbacks restore a previous stable state without tracking intermediate changes.
+  </p>
+</p>
 
 Features
 - Named scopes for directories or databases
