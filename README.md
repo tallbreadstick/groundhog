@@ -15,16 +15,6 @@ Install
 ```
 cargo install --path .
 ```
-- Ensure `%USERPROFILE%\.cargo\bin` (Windows) or `$HOME/.cargo/bin` (Linux/macOS) is on your PATH.
-
-Global Registry
-- Location:
-  - Windows: `%APPDATA%\groundhog\registry.json`
-  - Linux/macOS: `$HOME/.groundhog/registry.json`
-- Migration: If a legacy `registry.json` exists next to the executable, it will be migrated automatically to the new location.
-- Behavior:
-  - Scopes are recorded globally in the registry
-  - Snapshots are stored locally per scope under that scope’s directory
 
 Quick Start
 ```
