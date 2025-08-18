@@ -8,6 +8,12 @@
   </p>
 </p>
 
+<p align="center">
+  <strong>⚠️ Disclaimer:</strong> This project is not yet at a stable release (pilot <code>0.1-alpha</code>).<br/>
+  Please do not use for critical or production purposes. Use at your own risk.
+  
+</p>
+
 Features
 - Named scopes for directories or databases
 - Global scope registry (user-writable)
