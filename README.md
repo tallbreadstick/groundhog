@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Groundhog.png" alt="Groundhog logo" width="160" />
+  <img src="Groundhog.png" alt="Groundhog logo" width="160" style="border-radius: 16px;" />
   <br/>
   <h1 align="center" style="margin: 0; padding: 0; font-size: 2.4rem;">Groundhog</h1>
   <p align="center" style="margin-top: 0.25rem; font-size: 1.05rem;">
