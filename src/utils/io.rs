@@ -31,8 +31,34 @@ pub fn copy_dir_recursive_excluding(from: &Path, to: &Path, bar: &ProgressBar, e
     Ok(())
 }
 
+pub fn clean_dir_except(dir: &Path, except: &[&str]) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        let keep = path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| except.contains(&n))
+            .unwrap_or(false);
+
+        if keep {
+            continue;
+        }
+
+        if path.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn copy_dir_excluding_groundhog(from: &Path, to: &Path, bar: &ProgressBar) -> Result<()> {
     copy_dir_recursive_excluding(from, to, bar, &[".groundhog"])
 }
 
-
+pub fn clean_dir_except_groundhog(from: &Path) -> Result<()> {
+    clean_dir_except(from, &[".groundhog"])
+}

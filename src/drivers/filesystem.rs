@@ -16,6 +16,7 @@ impl BackendDriver for FilesystemDriver {
 
     fn rollback(&self, scope_target: &str, snapshot_dir: &Path) -> Result<()> {
         let dst = std::path::Path::new(scope_target);
+        io::clean_dir_except_groundhog(dst)?;
         io::copy_dir_excluding_groundhog(snapshot_dir, dst, &indicatif::ProgressBar::hidden())
     }
 }
