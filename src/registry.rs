@@ -105,27 +105,36 @@ pub fn cleanup_invalid_scopes() -> Result<Vec<Scope>> {
     Ok(valid)
 }
 
-pub fn resolve_scope(provided: &Option<String>) -> Result<Scope> {
-    let scopes = cleanup_invalid_scopes()?;
-    if let Some(name) = provided {
-        scopes
-            .into_iter()
-            .find(|s| s.name == *name)
-            .ok_or_else(|| anyhow!("scope '{}' not found", name))
-    } else {
-        let cwd = std::env::current_dir()?;
-        let cwd_str = cwd.display().to_string();
-        let mut iter = scopes.into_iter();
-        if let Some(found) = iter.clone().find(|s| s.target == cwd_str) {
-            Ok(found)
+pub fn resolve_scope(global_scope: &Option<String>) -> Result<Scope> {
+    if let Some(name) = global_scope {
+        // Explicit scope requested
+        let all = load_registry()?;
+        if let Some(s) = all.into_iter().find(|s| &s.name == name) {
+            return Ok(s);
         } else {
-            if let Some(first) = iter.next() {
-                Ok(first)
-            } else {
-                Err(anyhow!("no scopes registered"))
-            }
+            return Err(anyhow!("scope '{}' not found", name));
         }
     }
+
+    // No -s: look for a local .groundhog in cwd or parents
+    let cwd = std::env::current_dir()?;
+    let mut cur = cwd.as_path();
+    while cur.parent().is_some() {
+        let gh_path = cur.join(".groundhog");
+        if gh_path.exists() {
+            let cfg = crate::storage::load_config(cur)?;
+            // Use the scope tied to this workspace
+            if let Some(snap) = cfg.snapshots.first() {
+                // lookup scope by snap.scope in global registry
+                let all = load_registry()?;
+                if let Some(s) = all.into_iter().find(|x| x.name == snap.scope) {
+                    return Ok(s);
+                }
+            }
+        }
+        cur = cur.parent().unwrap();
+    }
+
+    // Nothing local found
+    Err(anyhow!("no scope specified and no .groundhog found in current directory"))
 }
-
-

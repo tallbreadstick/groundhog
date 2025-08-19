@@ -1,0 +1,8 @@
+[] implement merkle-tree for file-diffing
+[] implement database state snapshot drivers
+    [] mysql
+    [] postrgresql
+    [] sqlite
+[] implement groundhog global configs
+[] implement auto snapshot and rollback auto
+[] implement snapshot and rollback guards

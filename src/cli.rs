@@ -57,7 +57,7 @@ pub enum Commands {
     /// List snapshots in the current workspace
     List,
 
-    /// List defined scopes in the workspace
+    /// List globally defined scopes
     Scopes,
 
     /// Print CLI version

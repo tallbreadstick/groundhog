@@ -36,7 +36,7 @@ fn run() -> Result<()> {
             ops::do_delete(&cli.scope, &name)?;
         }
         Commands::List => {
-            ops::do_list()?;
+            ops::do_list(&cli.scope)?;
         }
         Commands::Scopes => {
             ops::do_scopes()?;

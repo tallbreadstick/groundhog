@@ -178,8 +178,9 @@ pub fn do_delete(global_scope: &Option<String>, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn do_list() -> Result<()> {
-    let root = storage::find_root()?;
+pub fn do_list(global_scope: &Option<String>) -> Result<()> {
+    let scope = registry::resolve_scope(global_scope)?;
+    let root = std::path::Path::new(&scope.target).to_path_buf();
     let config = storage::load_config(&root)?;
 
     if config.snapshots.is_empty() {
