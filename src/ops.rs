@@ -20,6 +20,32 @@ pub fn do_init(target: Option<String>, name: Option<String>) -> Result<()> {
         .unwrap_or(std::env::current_dir()?);
 
     let gh_dir = target_path.join(".groundhog");
+    let target_str = target_path.display().to_string();
+
+    // Check for recovery case: scope in registry but no .groundhog
+    let all = registry::load_registry()?;
+    if !gh_dir.exists() {
+        if let Some(existing) = all.iter().find(|s| s.target == target_str) {
+            storage::init_at(&target_path)?;
+            println!("{} {}", "i".yellow().bold(), "Recovered missing .groundhog workspace".yellow());
+
+            if let Some(new_name) = name {
+                if prompt_confirm(&format!(
+                    "Scope '{}' exists. Keep old name '{}' instead of new name '{}'? [y/N] ",
+                    existing.target, existing.name, new_name
+                ))? {
+                    println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                } else {
+                    do_rename(&Some(existing.name.clone()), &new_name)?;
+                }
+            } else {
+                println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+            }
+            return Ok(());
+        }
+    }
+
+    // If .groundhog doesn’t exist, create
     let created_workspace = if gh_dir.exists() {
         false
     } else {
@@ -27,17 +53,16 @@ pub fn do_init(target: Option<String>, name: Option<String>) -> Result<()> {
         true
     };
 
-    // Register scope globally only (do not store in local meta.json)
-    let target_str = target_path.display().to_string();
-    let kind = SnapshotKind::Filesystem; // TODO: detect DB URIs
+    // Register new scope globally
+    let kind = SnapshotKind::Filesystem;
     let scope_name = name.unwrap_or_else(|| generate_scope_name(&target_str));
     let scope = Scope { name: scope_name.clone(), target: target_str, kind, created_at: chrono::Local::now() };
-    match registry::register_scope(scope) {
+
+    match registry::register_scope(scope.clone()) {
         Ok(()) => {}
         Err(e) => {
-            // If scope already exists globally, treat as idempotent init
             if format!("{}", e).contains("already exists") {
-                println!("{} {}", "i".yellow().bold(), "Scope already registered globally".yellow());
+                return Err(anyhow!(e.to_string())); // hard error for duplicate target or name
             } else {
                 return Err(e);
             }

@@ -3,6 +3,7 @@
     [] mysql
     [] postrgresql
     [] sqlite
+[] implement groundhog ignore
 [] implement groundhog global configs
 [] implement auto snapshot and rollback auto
 [] implement snapshot and rollback guards
