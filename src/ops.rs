@@ -83,11 +83,40 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
     let root = std::path::Path::new(&scope.target).to_path_buf();
     let mut config = storage::load_config(&root)?;
 
+    // --- NEW: check local config for duplicate snapshot name within this scope ---
+    if config
+        .snapshots
+        .iter()
+        .any(|s| s.name == name && s.scope == scope.name)
+    {
+        eprintln!(
+            "{} {}: {}",
+            "!".yellow().bold(),
+            "Warning".yellow(),
+            format!(
+                "snapshot '{}' already exists in scope '{}'; skipping",
+                name, scope.name
+            )
+        );
+        return Ok(());
+    }
+
     let store_dir = storage::store_dir(&root);
     let snapshot_dir = storage::snapshot_dir_for(&store_dir, name);
 
+    // Keep an extra safeguard: if a directory with the same name already exists (orphaned),
+    // warn and skip to avoid clobbering.
     if snapshot_dir.exists() {
-        return Err(anyhow!("snapshot '{}' already exists", name));
+        eprintln!(
+            "{} {}: {}",
+            "!".yellow().bold(),
+            "Warning".yellow(),
+            format!(
+                "snapshot directory already exists at '{}'; skipping",
+                snapshot_dir.display()
+            )
+        );
+        return Ok(());
     }
 
     std::fs::create_dir_all(&snapshot_dir)?;
@@ -330,5 +359,3 @@ pub fn do_rename(global_scope: &Option<String>, new_name: &str) -> Result<()> {
 pub fn do_version() {
     println!("{} {}", "groundhog".bold(), "0.1-alpha".cyan());
 }
-
-

@@ -3,27 +3,75 @@ use indicatif::ProgressBar;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-pub fn copy_dir_recursive_excluding(from: &Path, to: &Path, bar: &ProgressBar, exclude_names: &[&str]) -> Result<()> {
+/// Load a .groundhogignore matcher from a scope root, if present.
+fn load_groundhogignore(root: &Path) -> Option<Gitignore> {
+    let ignore_file = root.join(".groundhogignore");
+    if ignore_file.exists() {
+        let mut builder = GitignoreBuilder::new(root);
+        let _ = builder.add(ignore_file);
+        if let Ok(gi) = builder.build() {
+            return Some(gi);
+        }
+    }
+    None
+}
+
+/// Recursively copy directory `from` → `to`, excluding files matched by .groundhogignore
+/// plus any names in `exclude_names`.
+pub fn copy_dir_recursive_excluding(
+    from: &Path,
+    to: &Path,
+    bar: &ProgressBar,
+    exclude_names: &[&str],
+) -> Result<()> {
     if !to.exists() {
         fs::create_dir_all(to)?;
     }
 
+    let gitignore = load_groundhogignore(from);
+
     let should_include = |e: &walkdir::DirEntry| {
-        let name = match e.file_name().to_str() { Some(n) => n, None => return true };
-        !exclude_names.iter().any(|ex| name.eq_ignore_ascii_case(ex))
+        let name = match e.file_name().to_str() {
+            Some(n) => n,
+            None => return true,
+        };
+
+        // Always exclude explicit names (e.g. ".groundhog")
+        if exclude_names.iter().any(|ex| name.eq_ignore_ascii_case(ex)) {
+            return false;
+        }
+
+        // Apply .groundhogignore matcher if present
+        if let Some(ref gi) = gitignore {
+            let path = e.path();
+            if gi.matched_path_or_any_parents(path, e.file_type().is_dir()).is_ignore() {
+                return false;
+            }
+        }
+
+        true
     };
 
     for entry in WalkDir::new(from).into_iter().filter_entry(|e| should_include(e)) {
-        let entry = match entry { Ok(e) => e, Err(_) => continue };
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let path = entry.path();
-        let rel = match path.strip_prefix(from) { Ok(r) => r, Err(_) => continue };
+        let rel = match path.strip_prefix(from) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
         let dest = to.join(rel);
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dest)?;
         } else if entry.file_type().is_file() {
-            if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
             fs::copy(path, &dest)?;
             bar.inc(1);
         }
@@ -31,12 +79,14 @@ pub fn copy_dir_recursive_excluding(from: &Path, to: &Path, bar: &ProgressBar, e
     Ok(())
 }
 
+/// Clean a directory except for explicitly listed names.
 pub fn clean_dir_except(dir: &Path, except: &[&str]) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        let keep = path.file_name()
+        let keep = path
+            .file_name()
             .and_then(|n| n.to_str())
             .map(|n| except.contains(&n))
             .unwrap_or(false);
@@ -55,10 +105,13 @@ pub fn clean_dir_except(dir: &Path, except: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Special case: copy everything except the .groundhog directory itself.
+/// Still respects .groundhogignore.
 pub fn copy_dir_excluding_groundhog(from: &Path, to: &Path, bar: &ProgressBar) -> Result<()> {
-    copy_dir_recursive_excluding(from, to, bar, &[".groundhog"])
+    copy_dir_recursive_excluding(from, to, bar, &[".groundhog", ".groundhogignore"])
 }
 
+/// Special case: clean directory except .groundhog folder (rollback safety).
 pub fn clean_dir_except_groundhog(from: &Path) -> Result<()> {
-    clean_dir_except(from, &[".groundhog"])
+    clean_dir_except(from, &[".groundhog", ".groundhogignore"])
 }
