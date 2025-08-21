@@ -112,7 +112,7 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
             "!".yellow().bold(),
             "Warning".yellow(),
             format!(
-                "snapshot directory already exists at '{}'; skipping",
+                "snapshot directory already exists at '{}'!",
                 snapshot_dir.display()
             )
         );
