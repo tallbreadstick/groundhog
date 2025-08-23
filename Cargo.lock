@@ -368,6 +368,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "walkdir",
+ "winapi",
 ]
 
 [[package]]

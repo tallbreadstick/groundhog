@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::groundhog::{GroundHogConfig, TreeNode};
 
-pub fn init_at(target: &Path) -> Result<()> {
+pub fn init_at(target: &Path, password: Option<String>) -> Result<()> {
     let root = target;
     let gh_dir = root.join(".groundhog");
     if gh_dir.exists() {
@@ -13,24 +13,25 @@ pub fn init_at(target: &Path) -> Result<()> {
 
     fs::create_dir_all(gh_dir.join("store"))?;
 
-    let mut cfg = GroundHogConfig::new();
+    // mark hidden if on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::um::fileapi::SetFileAttributesW;
+        use winapi::um::winnt::FILE_ATTRIBUTE_HIDDEN;
+        use std::os::windows::ffi::OsStrExt;
+
+        let mut wide: Vec<u16> = gh_dir.as_os_str().encode_wide().collect();
+        wide.push(0);
+        unsafe {
+            SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN);
+        }
+    }
+
+    let mut cfg = GroundHogConfig::new(password);
     cfg.hash_tree = TreeNode { hash: String::from(""), children: None };
     save_config(root, &cfg)?;
 
     Ok(())
-}
-
-pub fn find_root() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
-    loop {
-        if dir.join(".groundhog").is_dir() {
-            return Ok(dir);
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    Err(anyhow!("not inside a groundhog workspace (.groundhog not found)"))
 }
 
 pub fn store_dir(root: &Path) -> PathBuf {
@@ -65,5 +66,3 @@ fn sanitize(name: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect()
 }
-
-

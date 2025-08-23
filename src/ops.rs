@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use rpassword::read_password;
 use std::path::Path;
 
 use colored::*;
 use crate::config::groundhog::{Snapshot, SnapshotKind, TreeNode, Scope};
+use crate::utils::hash::{hash_password, verify_password};
 use comfy_table::{Table, presets::UTF8_FULL, Cell, Attribute, ContentArrangement};
 use crate::drivers::selector::select_drivers_for_target;
 use crate::registry;
@@ -12,7 +14,7 @@ use crate::storage;
 
 // Help is provided by clap; keep no-op or remove custom help.
 
-pub fn do_init(target: Option<String>, name: Option<String>) -> Result<()> {
+pub fn do_init(target: Option<String>, name: Option<String>, password: Option<String>) -> Result<()> {
     let target_path = target
         .as_deref()
         .map(Path::new)
@@ -26,20 +28,23 @@ pub fn do_init(target: Option<String>, name: Option<String>) -> Result<()> {
     let all = registry::load_registry()?;
     if !gh_dir.exists() {
         if let Some(existing) = all.iter().find(|s| s.target == target_str) {
-            storage::init_at(&target_path)?;
+            storage::init_at(&target_path, password)?;
             println!("{} {}", "i".yellow().bold(), "Recovered missing .groundhog workspace".yellow());
 
-            if let Some(new_name) = name {
-                if prompt_confirm(&format!(
-                    "Scope '{}' exists. Keep old name '{}' instead of new name '{}'? [y/N] ",
-                    existing.target, existing.name, new_name
-                ))? {
-                    println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
-                } else {
-                    do_rename(&Some(existing.name.clone()), &new_name)?;
+            match name {
+                Some(new_name) if new_name != existing.name => {
+                    if prompt_confirm(&format!(
+                        "Scope '{}' exists. Keep old name '{}' instead of new name '{}'? [y/N] ",
+                        existing.target, existing.name, new_name
+                    ))? {
+                        println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                    } else {
+                        do_rename(&Some(existing.name.clone()), &new_name)?;
+                    }
                 }
-            } else {
-                println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                _ => {
+                    println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                }
             }
             return Ok(());
         }
@@ -49,7 +54,7 @@ pub fn do_init(target: Option<String>, name: Option<String>) -> Result<()> {
     let created_workspace = if gh_dir.exists() {
         false
     } else {
-        storage::init_at(&target_path)?;
+        storage::init_at(&target_path, password)?;
         true
     };
 
@@ -104,26 +109,19 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
     let store_dir = storage::store_dir(&root);
     let snapshot_dir = storage::snapshot_dir_for(&store_dir, name);
 
-    // Keep an extra safeguard: if a directory with the same name already exists (orphaned),
-    // warn and skip to avoid clobbering.
     if snapshot_dir.exists() {
         eprintln!(
             "{} {}: {}",
             "!".yellow().bold(),
             "Warning".yellow(),
-            format!(
-                "snapshot directory already exists at '{}'!",
-                snapshot_dir.display()
-            )
+            format!("snapshot directory already exists at '{}'", snapshot_dir.display())
         );
         return Ok(());
     }
 
     std::fs::create_dir_all(&snapshot_dir)?;
-
     let bar = create_progress_bar("Creating snapshot");
 
-    // Placeholder: choose driver and capture state for the scope target
     let now = chrono::Local::now();
     let drivers = select_drivers_for_target(&scope.target);
     for driver in drivers {
@@ -134,8 +132,6 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
         bar.inc(1);
     }
 
-    // Placeholder: compute Merkle-like tree for changed content and store
-    // Implement optimized diffing in `utils::hash` and use it here to minimize I/O
     let tree = TreeNode { hash: String::from("TODO:root_hash"), children: None };
 
     // Track metadata
@@ -146,6 +142,7 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
         locked: password.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
         created_at: now,
         scope: scope.name.clone(),
+        password_hash: password.map(|p| hash_password(&p)),
     });
     config.last_updated = chrono::Local::now();
     config.hash_tree = tree;
@@ -208,10 +205,17 @@ pub fn do_delete(global_scope: &Option<String>, name: &str) -> Result<()> {
     let snap = &config.snapshots[index];
     let snap_path = root.join(&snap.directory);
 
-    // TODO: prompt for password if locked (when encryption is implemented)
-    if !prompt_confirm(&format!("Delete snapshot '{}'? [y/N] ", name))? { 
-        println!("Aborted.");
-        return Ok(());
+    if let Some(hash) = snap.password_hash.as_ref().or(config.password_hash.as_ref()) {
+        let password = &prompt_password(&format!("Enter password for snapshot '{}': ", name))?;
+        if !verify_password(password, hash) {
+            eprintln!("{} {}", "!".yellow().bold(), "Password is incorrect; unable to delete snapshot".yellow());
+            return Ok(());
+        }
+    } else {
+        if !prompt_confirm(&format!("Delete snapshot '{}'? [y/N] ", name))? {
+            println!("Aborted.");
+            return Ok(());
+        }
     }
 
     let bar = create_progress_bar("Deleting snapshot");
@@ -224,11 +228,71 @@ pub fn do_delete(global_scope: &Option<String>, name: &str) -> Result<()> {
     config.last_updated = chrono::Local::now();
     storage::save_config(&root, &config)?;
 
-    // If this deletion results in no snapshots and the workspace removed, optionally cleanup registry here.
     let _ = registry::cleanup_invalid_scopes();
 
     bar.finish_with_message("Snapshot deleted");
     println!("{} {}", "✔".green().bold(), format!("Deleted snapshot '{}'", name).green());
+    Ok(())
+}
+
+pub fn do_drop(global_scope: &Option<String>) -> Result<()> {
+    let scope = registry::resolve_scope(global_scope)?;
+    let root = std::path::Path::new(&scope.target).to_path_buf();
+    let config = storage::load_config(&root)?;
+
+    println!(
+        "{} {}",
+        "!".yellow().bold(),
+        format!(
+            "WARNING: dropping scope '{}' will permanently delete all snapshots under it. This action cannot be undone.",
+            scope.name
+        ).yellow()
+    );
+
+    // Check if scope has a password guard
+    if let Some(hash) = config.password_hash.as_ref() {
+        let password = &prompt_password(&format!("Enter password for scope '{}': ", scope.name))?;
+        if !verify_password(password, hash) {
+            eprintln!(
+                "{} {}",
+                "!".yellow().bold(),
+                "Password is incorrect; scope not dropped".yellow()
+            );
+            return Ok(());
+        }
+    } else {
+        if !prompt_confirm(&format!("Drop scope '{}'? [y/N] ", scope.name))? {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let bar = create_progress_bar("Dropping scope");
+    bar.set_message(scope.name.clone());
+
+    // Delete .groundhog folder
+    let gh_dir = root.join(".groundhog");
+    if gh_dir.exists() {
+        std::fs::remove_dir_all(&gh_dir)?;
+    }
+
+    // Delete .groundhogignore if it exists
+    let gh_ignore = root.join(".groundhogignore");
+    if gh_ignore.exists() {
+        std::fs::remove_file(&gh_ignore)?;
+    }
+
+    // Remove from global registry
+    let mut all = registry::cleanup_invalid_scopes()?;
+    all.retain(|s| s.name != scope.name);
+    registry::save_registry(&all)?;
+
+    bar.finish_with_message("Scope dropped");
+    println!(
+        "{} {}",
+        "✔".green().bold(),
+        format!("Dropped scope '{}'", scope.name).green()
+    );
     Ok(())
 }
 
@@ -299,6 +363,13 @@ fn prompt_confirm(message: &str) -> Result<bool> {
     Ok(ans == "y" || ans == "yes")
 }
 
+fn prompt_password(message: &str) -> Result<String> {
+    print!("{} {}", "?".cyan().bold(), message.cyan());
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let password = read_password()?; // input hidden
+    Ok(password)
+}
+
 fn generate_scope_name(target: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -306,8 +377,6 @@ fn generate_scope_name(target: &str) -> String {
     let digest = hasher.finalize();
     format!("scope-{}", &hex::encode(digest)[..8])
 }
-
-// Local resolve_scope removed; global registry-based resolver is used instead.
 
 pub fn do_scopes() -> Result<()> {
     let scopes = registry::cleanup_invalid_scopes()?;

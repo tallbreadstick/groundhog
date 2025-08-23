@@ -1,22 +1,26 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+use crate::utils::hash::hash_password;
+
 #[derive(Serialize, Deserialize)]
 pub struct GroundHogConfig {
     pub date_created: DateTime<Local>,
     pub last_updated: DateTime<Local>,
     pub snapshots: Vec<Snapshot>,
-    pub hash_tree: TreeNode
+    pub hash_tree: TreeNode,
+    pub password_hash: Option<String>, // NEW: workspace password
 }
 
 impl GroundHogConfig {
-    pub fn new() -> Self {
+    pub fn new(password: Option<String>) -> Self {
         let now = Local::now();
         Self {
             date_created: now,
             last_updated: now,
             snapshots: Vec::new(),
             hash_tree: TreeNode { hash: String::new(), children: None },
+            password_hash: password.as_ref().map(|p| hash_password(p)),
         }
     }
 }
@@ -29,6 +33,7 @@ pub struct Snapshot {
     pub locked: bool,
     pub created_at: DateTime<Local>,
     pub scope: String,
+    pub password_hash: Option<String>, // NEW: optional snapshot-level lock
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -44,6 +49,7 @@ pub struct Scope {
     pub kind: SnapshotKind,
     pub created_at: DateTime<Local>,
 }
+
 #[derive(Serialize, Deserialize)]
 pub struct TreeNode {
     pub hash: String,

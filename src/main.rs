@@ -22,8 +22,8 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { target, name } => {
-            ops::do_init(target, name)?;
+        Commands::Init { target, name, password } => {
+            ops::do_init(target, name, password)?;
         }
         Commands::Snapshot { name, password } => {
             let pw = password;
@@ -34,6 +34,9 @@ fn run() -> Result<()> {
         }
         Commands::Delete { name } => {
             ops::do_delete(&cli.scope, &name)?;
+        }
+        Commands::Drop => {
+            ops::do_drop(&cli.scope)?;
         }
         Commands::List => {
             ops::do_list(&cli.scope)?;

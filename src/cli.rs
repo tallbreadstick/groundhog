@@ -20,6 +20,8 @@ pub enum Commands {
         /// Optional human-readable name for the scope
         #[arg(short = 'n', long = "name")]
         name: Option<String>,
+        #[arg(long, value_name = "password")]
+        password: Option<String>
     },
 
     /// Create a snapshot with a name; optionally lock with a password
@@ -47,6 +49,10 @@ pub enum Commands {
         /// Name of snapshot to delete
         name: String,
     },
+
+
+    /// Drop the current scope and erases all snapshot data
+    Drop,
 
     /// Rename the current or specified scope
     Rename {
