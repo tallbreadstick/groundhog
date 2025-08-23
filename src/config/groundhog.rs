@@ -19,7 +19,7 @@ impl GroundHogConfig {
             date_created: now,
             last_updated: now,
             snapshots: Vec::new(),
-            hash_tree: TreeNode { hash: String::new(), children: None },
+            hash_tree: TreeNode { name: "".into(), hash: String::new(), is_dir: true, children: Some(Vec::new()) },
             password_hash: password.as_ref().map(|p| hash_password(p)),
         }
     }
@@ -52,7 +52,13 @@ pub struct Scope {
 
 #[derive(Serialize, Deserialize)]
 pub struct TreeNode {
+    /// Entry name (file or directory). Root can be "".
+    pub name: String,
+    /// Content hash for files; for directories, hash over sorted child entries.
     pub hash: String,
+    /// true = directory, false = file
+    pub is_dir: bool,
+    /// Children for directories (sorted by name for stability).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<TreeNode>>,
 }

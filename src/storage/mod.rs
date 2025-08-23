@@ -1,3 +1,5 @@
+// src/storage/mod.rs
+
 use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,10 +12,8 @@ pub fn init_at(target: &Path, password: Option<String>) -> Result<()> {
     if gh_dir.exists() {
         return Err(anyhow!(".groundhog already exists at {}", gh_dir.display()));
     }
-
     fs::create_dir_all(gh_dir.join("store"))?;
 
-    // mark hidden if on Windows
     #[cfg(target_os = "windows")]
     {
         use winapi::um::fileapi::SetFileAttributesW;
@@ -22,15 +22,11 @@ pub fn init_at(target: &Path, password: Option<String>) -> Result<()> {
 
         let mut wide: Vec<u16> = gh_dir.as_os_str().encode_wide().collect();
         wide.push(0);
-        unsafe {
-            SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN);
-        }
+        unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN); }
     }
 
-    let mut cfg = GroundHogConfig::new(password);
-    cfg.hash_tree = TreeNode { hash: String::from(""), children: None };
+    let cfg = GroundHogConfig::new(password);
     save_config(root, &cfg)?;
-
     Ok(())
 }
 
@@ -45,6 +41,25 @@ pub fn meta_path(root: &Path) -> PathBuf {
 pub fn snapshot_dir_for(store_dir: &Path, name: &str) -> PathBuf {
     let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
     store_dir.join(format!("{}_{}", ts, sanitize(name)))
+}
+
+pub fn manifest_path(snapshot_dir: &Path) -> PathBuf {
+    snapshot_dir.join("manifest.json")
+}
+
+pub fn save_manifest(snapshot_dir: &Path, tree: &TreeNode) -> Result<()> {
+    let p = manifest_path(snapshot_dir);
+    let json = serde_json::to_string_pretty(tree)?;
+    if let Some(parent) = p.parent() { fs::create_dir_all(parent)?; }
+    fs::write(p, json)?;
+    Ok(())
+}
+
+pub fn load_manifest(snapshot_dir: &Path) -> Result<TreeNode> {
+    let p = manifest_path(snapshot_dir);
+    let content = fs::read_to_string(&p)?;
+    let t: TreeNode = serde_json::from_str(&content)?;
+    Ok(t)
 }
 
 pub fn load_config(root: &Path) -> Result<GroundHogConfig> {

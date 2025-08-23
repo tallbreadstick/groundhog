@@ -1,20 +1,24 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
 use rpassword::read_password;
 use std::path::Path;
 
-use colored::*;
-use crate::config::groundhog::{Snapshot, SnapshotKind, TreeNode, Scope};
-use crate::utils::hash::{hash_password, verify_password};
-use comfy_table::{Table, presets::UTF8_FULL, Cell, Attribute, ContentArrangement};
+use crate::config::groundhog::{Scope, Snapshot, SnapshotKind};
 use crate::drivers::selector::select_drivers_for_target;
 use crate::registry;
 use crate::storage;
-// use crate::utils::io; // kept for future diff/copy utilities
+use crate::utils::hash::{build_merkle_tree, diff_trees, hash_password, verify_password};
+use crate::utils::io::{copy_selected_files, delete_selected_paths, make_skipper};
+use colored::*;
+use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets::UTF8_FULL};
 
 // Help is provided by clap; keep no-op or remove custom help.
 
-pub fn do_init(target: Option<String>, name: Option<String>, password: Option<String>) -> Result<()> {
+pub fn do_init(
+    target: Option<String>,
+    name: Option<String>,
+    password: Option<String>,
+) -> Result<()> {
     let target_path = target
         .as_deref()
         .map(Path::new)
@@ -29,7 +33,11 @@ pub fn do_init(target: Option<String>, name: Option<String>, password: Option<St
     if !gh_dir.exists() {
         if let Some(existing) = all.iter().find(|s| s.target == target_str) {
             storage::init_at(&target_path, password)?;
-            println!("{} {}", "i".yellow().bold(), "Recovered missing .groundhog workspace".yellow());
+            println!(
+                "{} {}",
+                "i".yellow().bold(),
+                "Recovered missing .groundhog workspace".yellow()
+            );
 
             match name {
                 Some(new_name) if new_name != existing.name => {
@@ -37,13 +45,21 @@ pub fn do_init(target: Option<String>, name: Option<String>, password: Option<St
                         "Scope '{}' exists. Keep old name '{}' instead of new name '{}'? [y/N] ",
                         existing.target, existing.name, new_name
                     ))? {
-                        println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                        println!(
+                            "{} {}",
+                            "✔".green().bold(),
+                            format!("Recovered scope '{}'", existing.name).green()
+                        );
                     } else {
                         do_rename(&Some(existing.name.clone()), &new_name)?;
                     }
                 }
                 _ => {
-                    println!("{} {}", "✔".green().bold(), format!("Recovered scope '{}'", existing.name).green());
+                    println!(
+                        "{} {}",
+                        "✔".green().bold(),
+                        format!("Recovered scope '{}'", existing.name).green()
+                    );
                 }
             }
             return Ok(());
@@ -61,7 +77,12 @@ pub fn do_init(target: Option<String>, name: Option<String>, password: Option<St
     // Register new scope globally
     let kind = SnapshotKind::Filesystem;
     let scope_name = name.unwrap_or_else(|| generate_scope_name(&target_str));
-    let scope = Scope { name: scope_name.clone(), target: target_str, kind, created_at: chrono::Local::now() };
+    let scope = Scope {
+        name: scope_name.clone(),
+        target: target_str,
+        kind,
+        created_at: chrono::Local::now(),
+    };
 
     match registry::register_scope(scope.clone()) {
         Ok(()) => {}
@@ -75,20 +96,36 @@ pub fn do_init(target: Option<String>, name: Option<String>, password: Option<St
     }
 
     if created_workspace {
-        println!("{} {}", "✔".green().bold(), format!("Initialized .groundhog at {}", target_path.display()).green());
+        println!(
+            "{} {}",
+            "✔".green().bold(),
+            format!("Initialized .groundhog at {}", target_path.display()).green()
+        );
     } else {
-        println!("{} {}", "i".yellow().bold(), format!("Using existing .groundhog at {}", target_path.display()).yellow());
+        println!(
+            "{} {}",
+            "i".yellow().bold(),
+            format!("Using existing .groundhog at {}", target_path.display()).yellow()
+        );
     }
-    println!("{} {} {}", "✔".green().bold(), "Initialized scope:".green(), scope_name.green());
+    println!(
+        "{} {} {}",
+        "✔".green().bold(),
+        "Initialized scope:".green(),
+        scope_name.green()
+    );
     Ok(())
 }
 
-pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<String>) -> Result<()> {
+pub fn do_snapshot(
+    global_scope: &Option<String>,
+    name: &str,
+    password: Option<String>,
+) -> Result<()> {
     let scope = registry::resolve_scope(global_scope)?;
     let root = std::path::Path::new(&scope.target).to_path_buf();
     let mut config = storage::load_config(&root)?;
 
-    // --- NEW: check local config for duplicate snapshot name within this scope ---
     if config
         .snapshots
         .iter()
@@ -108,21 +145,74 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
 
     let store_dir = storage::store_dir(&root);
     let snapshot_dir = storage::snapshot_dir_for(&store_dir, name);
-
     if snapshot_dir.exists() {
         eprintln!(
             "{} {}: {}",
             "!".yellow().bold(),
             "Warning".yellow(),
-            format!("snapshot directory already exists at '{}'", snapshot_dir.display())
+            format!(
+                "snapshot directory already exists at '{}'",
+                snapshot_dir.display()
+            )
         );
         return Ok(());
     }
-
     std::fs::create_dir_all(&snapshot_dir)?;
     let bar = create_progress_bar("Creating snapshot");
 
+    // 1) Build current Merkle tree (ignoring .groundhog / .groundhogignore)
+    let skip = make_skipper(&root);
+    let current_tree = build_merkle_tree(&root, "".into(), skip)
+        .map_err(|e| anyhow!("failed to build merkle tree: {}", e))?;
+
+    // 2) Find baseline tree (last snapshot in this scope) if any
+    let baseline_tree = config
+        .snapshots
+        .iter()
+        .filter(|s| s.scope == scope.name)
+        .last()
+        .map(|last| storage::load_manifest(&root.join(&last.directory)))
+        .transpose()
+        .unwrap_or(None);
+
+    // 3) Minimal copy based on diff
+    // If no baseline, do a full copy via diff add-all.
+    let (to_copy, _to_delete) = if let Some(base) = &baseline_tree {
+        let d = diff_trees(&current_tree, base);
+        let mut copy_list = d.added.clone();
+        copy_list.extend(d.modified.iter().cloned());
+        (copy_list, d.deleted)
+    } else {
+        // copy all files in current_tree
+        let mut all_files = Vec::new();
+        for (path, (_h, is_dir)) in crate::utils::hash::flatten_tree(&current_tree) {
+            if !is_dir {
+                all_files.push(path);
+            }
+        }
+        (all_files, Vec::new())
+    };
+
+    // 4) Copy only necessary files into the snapshot dir
+    copy_selected_files(&root, &snapshot_dir, &to_copy, &bar)?;
+
+    // 5) Save manifest in snapshot folder and update meta.json hash_tree
+    storage::save_manifest(&snapshot_dir, &current_tree)?;
     let now = chrono::Local::now();
+    config.snapshots.push(Snapshot {
+        name: name.to_string(),
+        directory: relative_path(&snapshot_dir, &root)?,
+        kind: scope.kind,
+        locked: password.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
+        created_at: now,
+        scope: scope.name.clone(),
+        password_hash: password.clone().map(|p| hash_password(&p)),
+    });
+    config.last_updated = chrono::Local::now();
+    config.hash_tree = current_tree;
+    storage::save_config(&root, &config)?;
+
+    // 6) (Optional) delegate to drivers for DB etc.
     let drivers = select_drivers_for_target(&scope.target);
     for driver in drivers {
         bar.set_message(format!("Capturing {}", scope.name));
@@ -132,53 +222,66 @@ pub fn do_snapshot(global_scope: &Option<String>, name: &str, password: Option<S
         bar.inc(1);
     }
 
-    let tree = TreeNode { hash: String::from("TODO:root_hash"), children: None };
-
-    // Track metadata
-    config.snapshots.push(Snapshot {
-        name: name.to_string(),
-        directory: relative_path(&snapshot_dir, &root)?,
-        kind: scope.kind,
-        locked: password.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
-        created_at: now,
-        scope: scope.name.clone(),
-        password_hash: password.map(|p| hash_password(&p)),
-    });
-    config.last_updated = chrono::Local::now();
-    config.hash_tree = tree;
-    storage::save_config(&root, &config)?;
-
     bar.finish_with_message("Snapshot created");
-    println!("{} {}", "✔".green().bold(), format!("Snapshot '{}' created", name).green());
+    println!(
+        "{} {}",
+        "✔".green().bold(),
+        format!("Snapshot '{}' created", name).green()
+    );
     Ok(())
 }
 
-pub fn do_rollback(global_scope: &Option<String>, name: Option<String>, latest: bool) -> Result<()> {
+pub fn do_rollback(
+    global_scope: &Option<String>,
+    name: Option<String>,
+    latest: bool,
+) -> Result<()> {
     let scope = registry::resolve_scope(global_scope)?;
     let root = std::path::Path::new(&scope.target).to_path_buf();
     let config = storage::load_config(&root)?;
 
-    let snapshot_path = if latest {
-        let last = config
+    let snap = if latest {
+        config
             .snapshots
             .iter()
             .filter(|s| s.scope == scope.name)
             .last()
-            .ok_or_else(|| anyhow!("no snapshots available"))?;
-        root.join(&last.directory)
+            .ok_or_else(|| anyhow!("no snapshots available"))?
     } else {
         let name = name.ok_or_else(|| anyhow!("snapshot name required unless --latest"))?;
-        let snap = config
+        config
             .snapshots
             .iter()
             .find(|s| s.name == name && s.scope == scope.name)
-            .ok_or_else(|| anyhow!("snapshot '{}' not found", name))?;
-        root.join(&snap.directory)
+            .ok_or_else(|| anyhow!("snapshot '{}' not found", name))?
     };
 
+    let snapshot_path = root.join(&snap.directory);
     let bar = create_progress_bar("Rolling back");
 
-    // Delegate to driver rollback for the scope target
+    // 1) Load snapshot manifest
+    let snap_tree = storage::load_manifest(&snapshot_path)
+        .map_err(|e| anyhow!("missing or invalid snapshot manifest: {}", e))?;
+
+    // 2) Build current tree to compute minimal changes
+    let skip = crate::utils::io::make_skipper(&root);
+    let current_tree = build_merkle_tree(&root, "".into(), skip)
+        .map_err(|e| anyhow!("failed to build current merkle tree: {}", e))?;
+
+    // 3) Diff (we want to transform current → snapshot)
+    let d = diff_trees(&snap_tree, &current_tree);
+    // - For files added/modified in snapshot (relative to current), copy from snapshot to root
+    // - For files deleted in snapshot (relative to current), delete from root
+    let mut to_copy = d.added.clone();
+    to_copy.extend(d.modified.iter().cloned());
+
+    // 4) Perform minimal I/O
+    // Copy from snapshot folder (which contains only changed files for that snapshot) *if present*,
+    // otherwise fall back to the full snapshot path.
+    copy_selected_files(&snapshot_path, &root, &to_copy, &bar)?;
+    delete_selected_paths(&root, &d.deleted)?;
+
+    // 5) (Optional) delegate to drivers, e.g., databases
     let drivers = select_drivers_for_target(&scope.target);
     for driver in drivers {
         if let Err(err) = driver.rollback(&scope.target, &snapshot_path) {
@@ -205,10 +308,18 @@ pub fn do_delete(global_scope: &Option<String>, name: &str) -> Result<()> {
     let snap = &config.snapshots[index];
     let snap_path = root.join(&snap.directory);
 
-    if let Some(hash) = snap.password_hash.as_ref().or(config.password_hash.as_ref()) {
+    if let Some(hash) = snap
+        .password_hash
+        .as_ref()
+        .or(config.password_hash.as_ref())
+    {
         let password = &prompt_password(&format!("Enter password for snapshot '{}': ", name))?;
         if !verify_password(password, hash) {
-            eprintln!("{} {}", "!".yellow().bold(), "Password is incorrect; unable to delete snapshot".yellow());
+            eprintln!(
+                "{} {}",
+                "!".yellow().bold(),
+                "Password is incorrect; unable to delete snapshot".yellow()
+            );
             return Ok(());
         }
     } else {
@@ -231,7 +342,11 @@ pub fn do_delete(global_scope: &Option<String>, name: &str) -> Result<()> {
     let _ = registry::cleanup_invalid_scopes();
 
     bar.finish_with_message("Snapshot deleted");
-    println!("{} {}", "✔".green().bold(), format!("Deleted snapshot '{}'", name).green());
+    println!(
+        "{} {}",
+        "✔".green().bold(),
+        format!("Deleted snapshot '{}'", name).green()
+    );
     Ok(())
 }
 
@@ -318,7 +433,10 @@ pub fn do_list(global_scope: &Option<String>) -> Result<()> {
         ]);
 
     for s in &config.snapshots {
-        let kind = match s.kind { SnapshotKind::Filesystem => "filesystem", SnapshotKind::Database => "database" };
+        let kind = match s.kind {
+            SnapshotKind::Filesystem => "filesystem",
+            SnapshotKind::Database => "database",
+        };
         let ts = s.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
         table.add_row(vec![
             Cell::new(&s.name),
@@ -385,7 +503,10 @@ pub fn do_scopes() -> Result<()> {
         .load_preset(comfy_table::presets::UTF8_FULL)
         .set_header(vec!["Name", "Type", "Target", "Created"]);
     for s in &scopes {
-        let kind = match s.kind { SnapshotKind::Filesystem => "filesystem", SnapshotKind::Database => "database" };
+        let kind = match s.kind {
+            SnapshotKind::Filesystem => "filesystem",
+            SnapshotKind::Database => "database",
+        };
         table.add_row(vec![
             s.name.clone(),
             kind.to_string(),
@@ -411,7 +532,11 @@ pub fn do_rename(global_scope: &Option<String>, new_name: &str) -> Result<()> {
     // Update local snapshots' recorded scope name in that workspace
     let scope_root = std::path::Path::new(&old_scope_obj.target).to_path_buf();
     let mut cfg = storage::load_config(&scope_root)?;
-    for snap in cfg.snapshots.iter_mut().filter(|s| s.scope == old_scope_obj.name) {
+    for snap in cfg
+        .snapshots
+        .iter_mut()
+        .filter(|s| s.scope == old_scope_obj.name)
+    {
         snap.scope = new_name.to_string();
     }
     storage::save_config(&scope_root, &cfg)?;
@@ -421,7 +546,12 @@ pub fn do_rename(global_scope: &Option<String>, new_name: &str) -> Result<()> {
         s.name = new_name.to_string();
     }
     registry::save_registry(&all)?;
-    println!("{} {} -> {}", "✔".green().bold(), old_scope_obj.name.green(), new_name.green());
+    println!(
+        "{} {} -> {}",
+        "✔".green().bold(),
+        old_scope_obj.name.green(),
+        new_name.green()
+    );
     Ok(())
 }
 
